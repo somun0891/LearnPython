@@ -1,0 +1,126 @@
+-ScratchPad
+website: https://relational.fit.cvut.cz/
+Db endpoint: relational.fit.cvut.cz
+port: 3306
+username: guest
+password relational
+
+https://sqlbolt.com
+
+
+service_credential = dbutils.secrets.get(scope="<scope>",key="<service-credential-key>")
+ 
+spark.conf.set("fs.azure.account.auth.type.<storage-account>.dfs.core.windows.net", "OAuth")
+spark.conf.set("fs.azure.account.oauth.provider.type.<storage-account>.dfs.core.windows.net", "org.apache.hadoop.fs.azurebfs.oauth2.ClientCredsTokenProvider")
+spark.conf.set("fs.azure.account.oauth2.client.id.<storage-account>.dfs.core.windows.net", "<application-id>")
+spark.conf.set("fs.azure.account.oauth2.client.secret.<storage-account>.dfs.core.windows.net", service_credential)
+spark.conf.set("fs.azure.account.oauth2.client.endpoint.<storage-account>.dfs.core.windows.net", "https://login.microsoftonline.com/<directory-id>/oauth2/token")
+
+
+arn:aws:s3:::s3xylo
+AKIARVXISZ56D56P3VWV
+ghSGKyu77muIfelWbI5iGmCFcBbK33K1hBF/PPX
+
+Access Key ID - AKIARVXISZ56KGKQRTG6
+Secret Access Key - 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
+
+Jupiter
+AKIARVXISZ56ATCTNUIV
+PDmzgGSUY+SMFWILnDKfJWKV1HL4VC76IHMl+bZH
+
+
+
+
+certutil -hashfile c:\users\conne\Downloads\spark-3.3.1-bin-hadoop3.tgz SHA512
+C:\Spark\spark-3.3.1-bin-hadoop3\bin\spark-shell
+
+C:\spark\spark-3.3.1-bin-hadoop3\bin\pyspark
+import findspark
+findspark.init()
+import pyspark
+textFile = sc.textFile("C:\spark\spark-3.3.1-bin-hadoop3\README.md")
+textFile.first()
+
+
+
+%HADOOP_HOME%\bin;%JAVA_HOME%\bin;%SPARK_HOME%\bin;C:\Spark\spark-3.3.1-bin-hadoop3\bin\;
+"$SPARK_HOME$\python;$SPARK_HOME$\python\lib\py4j-0.10.9.5-src.zip";
+C:\Users\conne\AppData\Local\Programs\Python\Python38\Scripts\;C:\Users\conne\AppData\Local\Programs\Python\Python38\;“;C:\Users\conne\AppData\Local\GitHubDesktop\bin;C:\Users\conne\AppData\Local\Programs\Azure Data Studio\bin;%PyCharm%;%JetBrains Gateway%;
+C:\Users\conne\AppData\Local\Programs\Microsoft VS Code\bin;%USERPROFILE%\.dotnet\tools;
+
+
+
+import os
+
+os.environ["PYSPARK_PYTHON"] = r"C:\Users\conne\anaconda3\envs\pysparkenv"
+
+os.environ["PYSPARK_DRIVER_PYTHON"] = r"C:\Users\conne\anaconda3\envs\pysparkenv"
+
+C:\Users\conne\anaconda3\envs\pysparkenv
+
+
+
+# Online Python compiler (interpreter) to run Python online.
+# Write Python 3 code in this online editor and run it.
+# from collections import Counter
+# inputstr = 'aabbccaaaab';
+# list1=[]
+# list1[:0]=inputstr
+# print(list1)
+# print("Hello world")
+
+inputstr = 'aabbbacccdb'
+
+from collections import OrderedDict
+
+#OrderedDict([('a', 0), ('b', 0), ('c', 0), ('d', 0)])
+dict = OrderedDict.fromkeys(inputstr,0)
+print(dict)
+
+for chr in inputstr:
+    dict[chr]+= 1
+    
+output = ''
+for key,value in dict.items():
+    output = output + key + str(value)
+print(output)   
+    
+
+
+        
+inputstr = 'aabbbacccdb'
+
+final = ""
+i=0
+    
+while i <= len(inputstr)-1:
+    count = 1;
+    j = i;
+    char = inputstr[i]
+    while j < len(inputstr)-1:
+        if inputstr[j] == inputstr[j+1]:
+            count = count + 1
+            j = j+1
+        else:
+            break;
+    final = final + char + str(count);
+    i= j+1;
+print(final)
+    
+#encoded_msg(inputstr)
+    
+        
+        
+        
+
+
+
+        
+
+        
+        
+    
+
+        
+        
+    

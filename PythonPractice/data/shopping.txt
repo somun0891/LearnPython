@@ -1,0 +1,18 @@
+<!-- shopping_list.md -->
+
+# Shopping List
+
+## Fruit
+
+* Banana
+* Apple
+* Peach
+
+## Candy
+
+* Chocolate
+* Nougat Bits
+
+1. Egg
+2. Mayo
+3. Potatoes

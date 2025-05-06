@@ -1,0 +1,27 @@
+airflow
+
+pip install virtualenv
+
+virtualenv -p python3 airflow_venv
+
+cd airflow_venv/Scripts
+
+activate
+
+pip install apache-airflow==1.10.9
+
+================================================
+VS Shortuts
+https://www.crio.do/blog/vs-code-shortcuts/
+
+================================================
+#Show all Env variables
+> Get-ChildItem Env:
+
+#Show specific key
+> echo $env:api_key 
+
+#Set new env variable
+> setx mykey "myval"
+
+

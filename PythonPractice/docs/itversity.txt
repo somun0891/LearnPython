@@ -1,0 +1,153 @@
+login to workspace-
+===================
+server - g01.itversity.com
+Username - itv004615
+passkey - 7s05gg0j5rkdguchasczgftbnxzps41d
+Project root - /home/itv004615/code/pycharmProjects
+
+tar file - C:/Users/conne/OneDrive/Desktop/PySpark/Pyspark_Project/pycharm-professional-2022.2.4.tar.gz
+
+current hdfs path - /user/itv004615/data/
+remote fs - /home/itv004615/code/pycharmProjects/data
+
+List all HDFS Commands.
+hadoop fs or hdfs dfs
+
+Basic usage for any command.
+hadoop fs -usage ls
+
+Full detailed information for any commands. 
+hadoop fs -help ls
+
+
+lesson - 44,45,61
+
+
+Login to pgsql-
+==============
+%load_ext sql
+
+%env DATABASE_URL=postgresql://itv004615_sms_user:7s05gg0j5rkdguchasczgftbnxzps41d@pg.itversity.com:5433/itv004615_sms_db
+
+%sql SELECT * FROM information_schema.tables LIMIT 10
+
+psql -h pg.itversity.com -p 5433 -d itv004615_sms_db -U itv004615_sms_user -W
+
+
+Setup SSH-
+
+Host g01.itversity.com
+  HostName g01.itversity.com
+  User itv004615
+  Port 22
+  PreferredAuthentications publickey
+  IdentityFile "C:/Users/conne/.ssh/g01.itversity.com_rsa" 
+
+
+Host g01.itversity.com
+  HostName g01.itversity.com
+  User itv004615
+
+ssh-keygen 
+#ssh-keygen -q -b 2048 -P "" -f C:/Users/conne/.ssh/keys/g01.itversity.com_rsa -t rsa
+
+#ssh-copy-id itv004615@g01.itversity.com 
+
+ssh-copy-id -i ~/.ssh/g01.itversity.com_rsa.pub itv004615@g01.itversity.com
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+=================================================================
+
+fk_date     fk_product    quantity   soft deleted
+20000105    15				34         1
+
+20000106    15              33         0
+
+
+
+
+
+dim-
+id eff       exp        curr    prodid    name
+15 1/1/2000  1/4/2000   TRUE    100       apple    1
+16 1/5/2000  1/9/2000   TRUE    100       apples   1
+17 1/10/2000  null      TRUE    100       appl
+18 1/1/2000  1/9/2000   TRUE    100       apple    
+
+
+
+ fk_date     fk_product    quantity   soft del
+20000105       16			34     	      
+20000105       18			34        
+
+
+20000105 between 1/1/2000 and 1/9/2000  --active ones
+
+
+
+dim-
+id eff       exp        curr    prodid    name
+15 1/1/2000  1/4/2000   TRUE    100       apple    1
+16 1/5/2000  1/9/2000   TRUE    100       apples   1
+17 1/10/2000  null      TRUE    100       appl
+18 1/1/2000  1/9/2000   TRUE    100       apple    
+
+
+
+ fk_date     fk_product    quantity   soft del
+20000105     16			    34     	      
+20000105     18			    34  
+   	
+======================================================================================
+ls_ablob_covidreportingsa
+ls_adls_covidreportingdl
+
+ds_population_raw_gz
+
+
+AzCopy-
+$env:AZCOPY_CRED_TYPE = "Anonymous";
+$env:AZCOPY_CONCURRENCY_VALUE = "AUTO";
+./azcopy.exe copy "https://covidreportingdl112022.blob.core.windows.net/raw/population_by_age_tsv?sv=2021-08-06&se=2022-11-28T11%3A50%3A45Z&sr=c&sp=rl&sig=a8dg6le2Jz21cipJDZy4nWANLMDCZo3xJ1jYMmx0Kqs%3D" "C:\Users\conne\AppData\Local\Temp\16670442456910\population_by_age_tsv" --overwrite=prompt --check-md5 FailIfDifferent --from-to=BlobLocal --blob-type BlockBlob --recursive --log-level=INFO;
+$env:AZCOPY_CRED_TYPE = "";
+$env:AZCOPY_CONCURRENCY_VALUE = "";
+
+new cases and deaths by country
+hospital admissions and ICU cases
+testing numbers
+country responses to covid-19
+
+github.com/cloudboxacademy/covid19/raw/main/ecdc_data
+
+ls_http_opendata_ecdc_europa_eu-
+https://github.com/
+
+ds_cases_deaths_raw_csv_http-
+cloudboxacademy/covid19/raw/main/ecdc_data/cases_deaths.csv
+cloudboxacademy/covid19/raw/main/ecdc_data/testing.csv
+cloudboxacademy/covid19/raw/main/ecdc_data/country_response.csv
+cloudboxacademy/covid19/raw/main/ecdc_data/hospital_admissions.csv
+
+
+=======================================================================================
