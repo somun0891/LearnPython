@@ -1,0 +1,231 @@
+Blob to ftp - Snowpark
+
+--1.Create egress/outbound network rule
+CREATE OR REPLACE NETWORK RULE my_ftp_network_rule
+  TYPE = 'HOST_PORT'
+  VALUE_LIST = ('<ftp_server_host>:<ftp_server_port>')
+  MODE = 'EGRESS';
+
+--2.Create ftp secret
+ CREATE OR REPLACE SECRET my_ftp_secret
+  TYPE = GENERIC_PASSWORD
+  USERNAME = 'ftp_user'
+  PASSWORD = '<ftp_password>';
+
+--3.Create external access integration
+  CREATE OR REPLACE EXTERNAL ACCESS INTEGRATION my_ftp_integration
+  ALLOWED_NETWORK_RULES = (my_ftp_network_rule)
+  ALLOWED_AUTHENTICATION_SECRETS = (my_ftp_secret)
+  ENABLED = TRUE;
+
+--4.Copy azure to ftp
+  CREATE OR REPLACE PROCEDURE copy_azure_to_ftp(
+    azure_container STRING,
+    azure_storage_account STRING,
+    azure_sas_token STRING,
+    ftp_remote_path STRING,
+    ftp_secret_name STRING
+)
+RETURNS STRING
+LANGUAGE PYTHON
+RUNTIME_VERSION = '3.8'
+PACKAGES = ('snowflake-snowpark-python', 'azure-storage-blob', 'ftplib')
+EXTERNAL_ACCESS_INTEGRATIONS = (my_ftp_integration)
+SECRETS = ('ftp_cred' = my_ftp_secret)
+HANDLER = 'run'
+AS
+$$
+import ftplib
+import snowflake.snowpark as snowpark
+from azure.storage.blob import BlobServiceClient
+
+def run(session, azure_container, azure_storage_account, azure_sas_token, ftp_remote_path, ftp_secret_name):
+    # Retrieve FTP credentials from the secret
+    ftp_credentials = session.get_secret(ftp_secret_name)
+    ftp_host = ftp_credentials.get_string('host')
+    ftp_user = ftp_credentials.get_string('username')
+    ftp_pass = ftp_credentials.get_string('password')
+
+    # Connect to Azure Blob Storage
+    connect_str = f"BlobEndpoint=https://{azure_storage_account}.blob.core.windows.net/;SharedAccessSignature={azure_sas_token}"
+    blob_service_client = BlobServiceClient.from_connection_string(connect_str)
+    container_client = blob_service_client.get_container_client(azure_container)
+
+    file_transfer_log = []
+
+    try:
+        with ftplib.FTP(ftp_host) as ftp:
+            ftp.login(user=ftp_user, passwd=ftp_pass)
+
+            # List files in Azure and transfer each one
+            for blob in container_client.list_blobs():
+                file_name = blob.name
+                
+                # Download file from Azure to a temporary local path in Snowflake's sandbox
+                temp_file_path = f"/tmp/{file_name}"
+                with open(temp_file_path, "wb") as download_file:
+                    download_stream = container_client.get_blob_client(file_name).download_blob()
+                    download_stream.readinto(download_file)
+                
+                # Upload file to the remote FTP server
+                with open(temp_file_path, "rb") as upload_file:
+                    ftp.storbinary(f'STOR {ftp_remote_path}/{file_name}', upload_file)
+                
+                file_transfer_log.append(f"Successfully transferred {file_name}")
+
+    except Exception as e:
+        return f"File transfer failed: {e}"
+
+    return "\n".join(file_transfer_log)
+$$;
+
+CALL copy_azure_to_ftp(
+    azure_container => 'my_data_container',
+    azure_storage_account => 'my_storage_account',
+    azure_sas_token => '<your_sas_token>',
+    ftp_remote_path => '/destination_folder',
+    ftp_secret_name => 'my_ftp_secret'
+);
+
+
+
+Azure credentials-
+-----------------
+
+CREATE OR REPLACE STAGE my_azure_stage
+  URL = 'azure://<your_storage_account>.blob.core.windows.net/<your_container>/<optional_path>/'
+  CREDENTIALS = (AZURE_SAS_TOKEN = '<your_copied_sas_token>'); -- new token gen post expiry
+
+e.g.
+
+USE ROLE DBA;
+CREATE OR REPLACE STAGE VANTAGEDW.STAGING.STG_AZ_LANDING
+URL = 'azure://fenixsaadls.blob.core.windows.net/input/'
+CREDENTIALS = (AZURE_SAS_TOKEN = 'sv=2024-11-04&ss=bfqt&srt=sco&sp=rwdlacupyx&se=2026-01-10T12:57:49Z&st=2025-08-10T04:42:49Z&spr=https,http&sig=VxJJScjUWzRsKvMM%2FNXGr9lFELXbH3UHZJO4G3fUL7w%3D')
+;
+
+
+Azure tenant_id available via snowflake secrets / environment variable in customer vm
+Azure client_id available via snowflake secrets / environment variable in customer vm
+Azure client_secret available via snowflake secrets / environment variable in customer vm
+Storage blob contributor role FOR THE APPLICATION created during storage integration
+This is required to assign RBAC permissions the app user for snowflake service.
+
+Azure key vault secret name for SAS_TOKEN - this will used as part of connection string to connect to 
+blob storage with python.
+Azure key_vault_secret_user RBAC permissions
+
+Access Az Key vault-
+-------------------
+
+# Using Service principal - recommended in snowpark containers
+# 3 secrets to be retrieved from snowflake secrets objects
+
+import os
+from azure.identity import ClientSecretCredential
+from azure.keyvault.secrets import SecretClient
+import sys
+
+def get_secret_from_keyvault_in_container(keyvault_url: str, secret_name: str) -> str:
+    """
+    Accesses Azure Key Vault using a Service Principal (client ID, client secret, tenant ID).
+    These credentials must be securely provided to your Snowpark Container (e.g., via Snowflake Secrets
+    loaded as environment variables, or other secure injection methods).
+    """
+    try:
+        # Retrieve credentials from environment variables (recommended for containers)
+        # These environment variables would be securely passed to your Snowpark Container
+        # For example, by referencing Snowflake Secrets in your service definition.
+        tenant_id = os.environ.get("AZURE_TENANT_ID")
+        client_id = os.environ.get("AZURE_CLIENT_ID")
+        client_secret = os.environ.get("AZURE_CLIENT_SECRET")
+
+        if not all([tenant_id, client_id, client_secret]):
+            raise ValueError("Azure credentials (TENANT_ID, CLIENT_ID, CLIENT_SECRET) not found in environment variables.")
+
+        credential = ClientSecretCredential(
+            tenant_id=tenant_id,
+            client_id=client_id,
+            client_secret=client_secret
+        )
+        
+        secret_client = SecretClient(vault_url=keyvault_url, credential=credential)
+        secret = secret_client.get_secret(secret_name)
+        return secret.value
+
+    except Exception as e:
+        print(f"Error accessing Key Vault from Snowpark Container: {e}", file=sys.stderr)
+        # Provide guidance for container setup
+        print("Ensure the following environment variables are securely set for your container:", file=sys.stderr)
+        print("- AZURE_TENANT_ID", file=sys.stderr)
+        print("- AZURE_CLIENT_ID", file=sys.stderr)
+        print("- AZURE_CLIENT_SECRET", file=sys.stderr)
+        print("Also, ensure the Service Principal has 'Get' secret permission on the Key Vault.", file=sys.stderr)
+        raise
+
+
+# Example Usage (replace with your actual values and container setup)
+if __name__ == "__main__":
+    # In your Snowpark Container service definition, you would typically
+    # map Snowflake Secrets to these environment variables.
+    # Example:
+    # env:
+    #   AZURE_TENANT_ID: SNOWFLAKE_SECRET_TO_AZURE_TENANT_ID
+    #   AZURE_CLIENT_ID: SNOWFLAKE_SECRET_TO_AZURE_CLIENT_ID
+    #   AZURE_CLIENT_SECRET: SNOWFLAKE_SECRET_TO_AZURE_CLIENT_SECRET
+    
+    # These are placeholders; actual values come from container's environment
+    keyvault_url = "https://your-keyvault-name.vault.azure.net/"
+    secret_name = "MyContainerSecret"
+
+    try:
+        retrieved_secret = get_secret_from_keyvault_in_container(keyvault_url, secret_name)
+        print(f"Successfully retrieved secret: {retrieved_secret}")
+    except Exception as e:
+        print(f"Failed to retrieve secret: {e}")
+
+
+Create and retrieve snowflake secrets-
+-------------------------------------
+
+-- Create a secret for the Azure tenant ID
+CREATE OR REPLACE SECRET azure_tenant_secret
+  TYPE = GENERIC_STRING
+  SECRET_STRING = '<your_azure_tenant_id>';
+
+-- Create a secret for the Azure client ID
+CREATE OR REPLACE SECRET azure_client_id_secret
+  TYPE = GENERIC_STRING
+  SECRET_STRING = '<your_azure_client_id>';
+
+-- Create a secret for the Azure client secret
+CREATE OR REPLACE SECRET azure_client_secret
+  TYPE = GENERIC_STRING
+  SECRET_STRING = '<your_azure_client_secret>';
+
+
+CREATE OR REPLACE PROCEDURE my_azure_proc()
+  RETURNS STRING
+  LANGUAGE PYTHON
+  RUNTIME_VERSION = '3.8'
+  PACKAGES = ('_snowflake')
+  SECRETS = (
+    'azure_tenant' = azure_tenant_secret,
+    'azure_client_id' = azure_client_id_secret,
+    'azure_client_secret' = azure_client_secret
+  )
+  HANDLER = 'run'
+AS
+$$
+import _snowflake
+
+def run(session):
+  # Retrieve the secret values using the aliases defined in the SECRETS parameter
+  azure_tenant_id = _snowflake.get_generic_secret_string('azure_tenant')
+  client_id = _snowflake.get_generic_secret_string('azure_client_id')
+  client_secret = _snowflake.get_generic_secret_string('azure_client_secret')
+  
+  # Now you can use these variables to authenticate with Azure
+  return f"Retrieved credentials: Tenant ID={azure_tenant_id}, Client ID={client_id}"
+$$;
+

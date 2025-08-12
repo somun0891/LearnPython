@@ -1,0 +1,75 @@
+#conda env create -f environment.yml
+#conda activate chairlift-test
+#conda activate chairlift-test
+#conda list
+#conda env update --file environment.yml --prune
+
+name: chairlift-test
+channels:
+  - snowflake
+  - conda-forge
+  - defaults
+dependencies:
+  - python=3.10
+  - pip
+  - pip:
+      - pytest
+      - streamlit>=1.28.0
+      - snowflake-cli-labs>=2.0.0
+      - snowflake-snowpark-python
+      - snowflake-native-apps-permission-stub
+
+
+
+
+
+# Use a lightweight base image
+# FROM continuumio/miniconda3:latest
+
+# # Set working directory
+# WORKDIR /app
+
+# # Copy the environment file into the image
+# COPY environment.yml .
+
+# # Create the Conda environment
+# RUN conda env create -f environment.yml
+
+# # Activate the environment
+# SHELL ["conda", "run", "-n", "chairlift-test", "/bin/bash", "-c"]
+
+# # Optional: Copy your project files into the container
+# COPY . .
+
+# # Default command (optional)
+# CMD ["conda", "run", "-n", "chairlift-test", "streamlit", "run", "app.py"]
+
+
+# Build the image
+# docker build -t chairlift-env .
+
+# # Run the container interactively
+# docker run -it chairlift-env /bin/bash
+
+# # OR run it with the default command
+# docker run -p 8501:8501 chairlift-env
+
+
+# name: CI Test
+
+# on: [push]
+
+# jobs:
+#   build-test:
+#     runs-on: ubuntu-latest
+#     steps:
+#       - uses: actions/checkout@v3
+
+#       - name: Set up Docker Buildx
+#         uses: docker/setup-buildx-action@v3
+
+#       - name: Build Docker image
+#         run: docker build -t chairlift-env .
+
+#       - name: Run tests
+#         run: docker run chairlift-env pytest

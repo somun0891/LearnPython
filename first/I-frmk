@@ -1,0 +1,652 @@
+Ingestion framework
+-------------------
+1.INGESTION_JOB_CONTROL-
+
+Column Name	Data Type	Description
+JOB_ID	NUMBER(18,0)	Primary Key. Unique identifier for each ingestion job.
+FILE_NAME_PATTERN	VARCHAR(255)	The file name pattern to match (e.g., sales_data_*.csv).
+file_date_format_expr VARCHAR(255)  
+SOURCE_FILE_PATH	VARCHAR(1000)	The path in Azure Blob Storage (e.g., azure://mycontainer/raw/).
+FILE_TYPE	VARCHAR(50)	Specifies the file format: DELIMITED or FIXED_WIDTH.
+LAYOUT_ID	NUMBER(18,0)	Foreign Key to FILE_LAYOUT_METADATA.
+TARGET_TABLE	VARCHAR(255)	The target Snowflake table for data loading.
+HEADER_ROW_COUNT	NUMBER(10,0)	Number of header rows to skip.
+FOOTER_ROW_COUNT	NUMBER(10,0)	Number of footer rows to skip.
+IS_ACTIVE	BOOLEAN	Flag to enable or disable the ingestion job.
+CREATED_AT	TIMESTAMP_NTZ	Timestamp when the job was created.
+UPDATED_AT	TIMESTAMP_NTZ	Timestamp of the last update to the job record.
+CUSTOM_SQL_TRANSFORM	VARCHAR(16000)	An optional SELECT statement for the COPY INTO command, used for data transformations during ingestion. This is a crucial addition for COPY TRANSFORM functionality.
+CUSTOM_SQL_OVERRIDE_FL - 1 implies don't override thru automation 
+
+
+2. FILE_LAYOUT_METADATA-
+
+This table consolidates the information from the previous FILE_LAYOUT and FILE_COLUMN_DETAILS tables.
+
+Column Name	Data Type	Description
+LAYOUT_ID	NUMBER(18,0)	Primary Key. Unique identifier for the file layout.
+LAYOUT_NAME	VARCHAR(255)	Descriptive name for the file layout (e.g., Sales_Fixed_Width_Layout).
+FILE_TYPE	VARCHAR(50)	The file format: DELIMITED or FIXED_WIDTH.
+DELIMITER	VARCHAR(10)	Delimiter for delimited files (e.g., ','). NULL for fixed-width.
+METADATA_JSON	VARIANT	A JSON object storing detailed column specifications. For fixed-width files, this will include start_position, end_position, column_name, and data_type for each column. For delimited files, it may contain column names and data types for schema validation.
+IS_ACTIVE	BOOLEAN	Flag to enable or disable the layout definition.
+CREATED_AT	TIMESTAMP_NTZ	Timestamp of creation.
+UPDATED_AT	TIMESTAMP_NTZ	Timestamp of the last update.
+
+{
+  "columns": [
+    { "name": "EMPLOYEE_ID", "start": 1, "end": 10, "type": "VARCHAR" },
+    { "name": "FIRST_NAME", "start": 11, "end": 30, "type": "VARCHAR" },
+    { "name": "SALARY", "start": 31, "end": 40, "type": "NUMBER" }
+  ]
+}
+
+{
+  "columns": [
+    { "name": "ID", "file_col_pos":1, "type": "NUMBER"  },
+    { "name": "PRODUCT_NAME", "file_col_pos":2, "type": "VARCHAR" },
+    { "name": "PRICE", "file_col_pos":3, "type": "NUMBER" }
+  ]
+}
+
+
+INGESTION_AUDIT_LOG-
+
+Column Name	Data Type	Description
+AUDIT_ID	NUMBER(18,0)	Primary Key. Unique identifier for the audit log entry.
+JOB_ID	NUMBER(18,0)	Foreign Key to INGESTION_JOB_CONTROL.
+RUN_START_TIME	TIMESTAMP_NTZ	Timestamp when the ingestion run started.
+RUN_END_TIME	TIMESTAMP_NTZ	Timestamp when the ingestion run finished.
+STATUS	VARCHAR(50)	Overall status: SUCCESS, FAILURE, IN_PROGRESS.
+ERROR_MESSAGE	VARCHAR(1000)	Detailed error message if the run failed.
+ROWS_PROCESSED	NUMBER(18,0)	Total number of rows processed from the source file.
+ROWS_LOADED	NUMBER(18,0)	Number of rows successfully loaded into the target table.
+FILE_SIZE_BYTES	NUMBER(18,0)	Size of the source file in bytes.
+LOADED_BY_USER	VARCHAR(255)	User or system that initiated the load.
+LOAD_QUERY_TEXT	VARCHAR(10000)	The actual Snowflake COPY command or script used.
+SNOWFLAKE_QUERY_ID	VARCHAR(255)	Snowflake's unique ID for the executed query.
+
+INGESTION_ERROR_LOG-
+
+Column Name	Data Type	Description
+ERROR_ID	NUMBER(18,0)	Primary Key. Unique identifier for the error log entry.
+AUDIT_ID	NUMBER(18,0)	Foreign Key to INGESTION_AUDIT_LOG.
+SOURCE_FILE_NAME	VARCHAR(255)	The name of the file where the error occurred.
+SOURCE_ROW_NUMBER	NUMBER(18,0)	The row number in the source file that failed.
+ERROR_CODE	VARCHAR(50)	A code identifying the type of error (e.g., DATA_TYPE_MISMATCH, NULL_VIOLATION).
+ERROR_DESCRIPTION	VARCHAR(1000)	A human-readable description of the error.
+BAD_RECORD_CONTENT	VARCHAR(16000)	The full content of the failed row.
+RECORD_TIMESTAMP	TIMESTAMP_NTZ	Timestamp of the error.
+
+--Add more fields based on list on SOCIAL and also add a dry run using size_limit and val_mode
+-------------------------------------------------------------------------------------
+
+--log error using validate function
+------------------------------------
+INSERT INTO INGESTION_ERROR_LOG (
+    AUDIT_ID,
+    SOURCE_FILE_NAME,
+    SOURCE_ROW_NUMBER,
+    ERROR_CODE,
+    ERROR_DESCRIPTION,
+    BAD_RECORD_CONTENT,
+    RECORD_TIMESTAMP
+)
+SELECT
+    '${AUDIT_ID}', -- Matillion variable
+    v.file_name,
+    v.line,
+    v.error_code,
+    v.error_message,
+    v.line, -- Using the full line content as the bad record content
+    CURRENT_TIMESTAMP()
+FROM TABLE(VALIDATE(TARGET_TABLE, JOB_ID => '_last')) AS v;
+
+
+--PARSE FIXED WIDTH / COMMA DELIM COLUMN SPEC/SQL 
+-------------------------------------------------
+-- Use result_scan and query_id to fetch and set in variable in query_result_to_scalar
+DECLARE
+  json_data VARIANT := PARSE_JSON('{
+    "columns": [
+      { "name": "EMPLOYEE_ID", "start": 1, "end": 10, "type": "VARCHAR" },
+      { "name": "FIRST_NAME", "start": 11, "end": 30, "type": "VARCHAR" },
+      { "name": "SALARY", "start": 31, "end": 40, "type": "NUMBER" }
+    ]
+  }');
+  sql_query VARCHAR;
+  column_list VARCHAR := '';
+  column_name VARCHAR;
+  start_pos NUMBER;
+  end_pos NUMBER;
+  col_type VARCHAR;
+  col_length NUMBER;
+  col_item VARIANT;
+BEGIN
+  FOR col_item IN (SELECT VALUE FROM TABLE(FLATTEN(INPUT => json_data:columns))) DO
+    column_name := col_item:name::VARCHAR;
+    start_pos := col_item:start::NUMBER;
+    end_pos := col_item:end::NUMBER;
+    col_type := col_item:type::VARCHAR;
+    col_length := end_pos - start_pos + 1;
+
+    -- Construct the SUBSTR expression with CAST
+    column_list := column_list || 'CAST(SUBSTR(input_line, ' || start_pos || ', ' || col_length || ') AS ' || col_type || ') AS ' || column_name || ', ';
+  END FOR;
+
+  -- Remove the trailing comma and space
+  column_list := LEFT(column_list, LENGTH(column_list) - 2);
+
+  -- Construct the final SQL query
+  sql_query := 'SELECT ' || column_list || ' FROM MY_RAW_TABLE';
+
+  -- This is a placeholder for demonstrating the output.
+  -- In a real scenario, you would use EXECUTE IMMEDIATE to run this query.
+  RETURN sql_query;
+END;
+
+--alternative to above - PARSE FIXED WIDTH
+------------------------------------------
+
+DECLARE
+  -- This will hold the result of the cursor
+  row_data_json VARIANT;
+  -- The cursor to iterate over the rows in the metadata table
+  c1 CURSOR FOR SELECT METADATA_JSON FROM INGESTION_METADATA WHERE FILE_TYPE = 'FIXED_WIDTH';
+
+  sql_query VARCHAR;
+  column_list VARCHAR;
+  col_item VARIANT;
+  column_name VARCHAR;
+  start_pos NUMBER;
+  end_pos NUMBER;
+  col_type VARCHAR;
+  col_length NUMBER;
+BEGIN
+  -- Create a temporary table to store the generated SQL queries
+  CREATE OR REPLACE TEMPORARY TABLE TEMP_GENERATED_QUERIES (
+    LAYOUT_ID NUMBER,
+    GENERATED_SQL VARCHAR
+  );
+
+  -- Open the cursor and loop through each row
+  FOR record IN c1 DO
+    row_data_json := record.METADATA_JSON;
+    column_list := '';
+    sql_query := '';
+
+    -- Flatten the JSON array to process each column definition
+    FOR col_item IN (SELECT VALUE FROM TABLE(FLATTEN(INPUT => row_data_json:columns))) DO
+      column_name := col_item:name::VARCHAR;
+      start_pos := col_item:start::NUMBER;
+      end_pos := col_item:end::NUMBER;
+      col_type := col_item:type::VARCHAR;
+      col_length := end_pos - start_pos + 1;
+
+      -- Build the SUBSTR expression with explicit CAST for each column
+      column_list := column_list || 'CAST(SUBSTR(input_line, ' || start_pos || ', ' || col_length || ') AS ' || col_type || ') AS ' || column_name || ', ';
+    END FOR;
+
+    -- Remove the trailing comma and space
+    IF (LENGTH(column_list) > 0) THEN
+      column_list := LEFT(column_list, LENGTH(column_list) - 2);
+    END IF;
+
+    -- Construct the final SQL query using the built column list
+    sql_query := 'SELECT ' || column_list || ' FROM @MY_AZURE_STAGE/fixed_width_file.dat';
+
+    -- Insert the generated query into the temporary table
+    -- NOTE: In a real scenario, you'd also need to grab the Layout ID from the cursor
+    INSERT INTO TEMP_GENERATED_QUERIES (LAYOUT_ID, GENERATED_SQL) VALUES (1, :sql_query);
+  END FOR;
+
+  RETURN 'Script completed successfully.';
+END;
+
+--metadata driven copy
+
+CREATE OR REPLACE PROCEDURE INGESTION_CONTROL.PUBLIC.RUN_METADATA_DRIVEN_LOAD()
+RETURNS VARCHAR
+LANGUAGE SQL
+AS
+$$
+DECLARE
+    -- Cursor to iterate through active, pending jobs in the metadata table
+    c1 CURSOR FOR 
+        SELECT
+            pipeline_id,
+            source_stage_name,
+            stage_sql,
+            relative_path,
+            file_date_format_expr,
+            source_file_pattern,                       
+            target_schema_name,
+            target_table_name,
+            file_type,
+            delimited_options,
+            fixed_width_spec,
+            transformation_query,
+            on_error_behavior,
+            skip_header_count
+        FROM INGESTION_CONTROL.PUBLIC.FILE_INGESTION_METADATA
+        WHERE is_active = TRUE AND load_status = 'PENDING';
+
+    -- Variables to hold the values from the cursor
+    v_pipeline_id NUMBER;
+    v_source_stage_name VARCHAR;
+    v_stage_sql;
+    v_relative_path; 
+    v_file_date_format_expr;    
+    v_source_file_pattern VARCHAR;     
+    v_target_schema_name VARCHAR;
+    v_target_table_name VARCHAR;
+    v_file_type VARCHAR;
+    v _delimited_options VARIANT;
+    v_fixed_width_spec VARIANT;
+    v_transformation_query VARCHAR;
+    v_on_error_behavior VARCHAR;
+    v_skip_header_count NUMBER;
+
+    -- A variable to hold the dynamically generated SQL command
+    v_copy_sql VARCHAR;
+    v_stage VARCHAR;
+    
+    -- Variables for building fixed-width select list
+    v_fixed_width_select_list VARCHAR;
+    v_fixed_width_column_spec_row VARIANT;
+
+BEGIN
+    -- Main loop to iterate through each pending pipeline
+    FOR record IN c1 DO
+        v_pipeline_id := record.pipeline_id;
+        v_source_stage_name := record.source_stage_name;
+        v_stage_sql := record.stage_sql;
+        v_relative_path := record.relative_path; 
+        v_file_date_format_expr := record.file_date_format_expr --replace relative_path date
+        v_source_file_pattern := record.source_file_pattern;
+        v_target_schema_name := record.target_schema_name;
+        v_target_table_name := record.target_table_name;
+        v_file_type := record.file_type;
+        v_delimited_options := record.delimited_options;
+        v_fixed_width_spec := record.fixed_width_spec;
+        v_transformation_query := record.transformation_query;
+        v_on_error_behavior := record.on_error_behavior;
+        v_skip_header_count := record.skip_header_count;
+
+        -- Step 1: Update status to 'IN_PROGRESS' before starting
+        UPDATE INGESTION_CONTROL.PUBLIC.FILE_INGESTION_METADATA
+        SET load_status = 'IN_PROGRESS', last_run_timestamp = CURRENT_TIMESTAMP()
+        WHERE pipeline_id = v_pipeline_id;
+
+        -- Step 2: Build the dynamic COPY INTO statement based on file_type
+        BEGIN
+            v_copy_sql := 'COPY INTO ' || v_target_schema_name || '.' || v_target_table_name;
+
+            -- Conditional logic for DELIMITED files
+            IF (v_file_type = 'DELIMITED') THEN
+                
+        b         -- Build the file format clause from delimited_options JSON
+                DECLARE
+                    v_file_format_options_str VARCHAR DEFAULT '';
+                BEGIN
+                    IF (v_delimited_options:FIELD_DELIMITER IS NOT NULL) THEN
+                        v_file_format_options_str := v_file_format_options_str || ' FIELD_DELIMITER = ''' || v_delimited_options:FIELD_DELIMITER::VARCHAR || '''';
+                    END IF;
+                    IF (v_delimited_options:FIELD_OPTIONALLY_ENCLOSED_BY IS NOT NULL) THEN
+                         v_file_format_options_str := v_file_format_options_str || ' FIELD_OPTIONALLY_ENCLOSED_BY = ''' || v_delimited_options:FIELD_OPTIONALLY_ENCLOSED_BY::VARCHAR || '''';
+                    END IF;
+
+                    IF (v_stage_sql IS NOT NULL) THEN
+                       v_stage := '( ' || v_stage_sql || ' )'
+                    ELSE IF 
+                       v_stage := '@'||v_source_stage_name
+                    END IF;
+
+                    -- Add more options as needed...
+
+                    v_copy_sql := v_copy_sql 
+                                   || ' FROM ' 
+                                   || v_stage 
+                                   || ' PATTERN = ''' || v_source_file_pattern || ''' ' 
+                                   || ' FILE_FORMAT = (TYPE = ''CSV'' ' || v_file_format_options_str || ' ' || 
+                                    ' SKIP_HEADER = ' || v_skip_header_count || ')';
+                END;
+            
+            -- Conditional logic for FIXED_WIDTH files
+            ELSEIF (v_file_type = 'FIXED_WIDTH') THEN
+
+                -- Dynamically build the SELECT list from the fixed_width_spec JSON
+                v_fixed_width_select_list := '';
+                
+                FOR v_fixed_width_column_spec_row IN (SELECT value FROM TABLE(FLATTEN(v_fixed_width_spec))) DO
+                    DECLARE
+                        v_col_name VARCHAR;
+                        v_start NUMBER;
+                        v_length NUMBER;
+                    BEGIN
+                        v_col_name := v_fixed_width_column_spec_row:column_name::VARCHAR;
+                        v_start := v_fixed_width_column_spec_row:start::NUMBER;
+                        v_length := v_fixed_width_column_spec_row:length::NUMBER;
+
+                        IF (v_fixed_width_select_list != '') THEN
+                            v_fixed_width_select_list := v_fixed_width_select_list || ', ';
+                        END IF;
+                        v_fixed_width_select_list := v_fixed_width_select_list || 
+                                                     'SUBSTR($1, ' || v_start || ', ' || v_length || ') AS ' || v_col_name;
+                    END;
+                END FOR;
+
+                v_copy_sql := v_copy_sql || ' FROM (SELECT ' || v_fixed_width_select_list || ' FROM @' || v_source_stage_name || ')';
+                v_copy_sql := v_copy_sql || ' PATTERN = ''' || v_source_file_pattern || ''' ' ||
+                               ' FILE_FORMAT = (TYPE = ''CSV'' SKIP_HEADER = ' || v_skip_header_count || ')';
+
+            END IF;
+            
+            -- Add the final ON_ERROR clause (common to both)
+            v_copy_sql := v_copy_sql || ' ON_ERROR = ''' || v_on_error_behavior || '''';
+
+            -- Execute the dynamically built COPY statement
+            EXECUTE IMMEDIATE v_copy_sql;
+
+            -- If the execution is successful, update status
+            UPDATE INGESTION_CONTROL.PUBLIC.FILE_INGESTION_METADATA
+            SET load_status = 'COMPLETED', last_successful_load_timestamp = CURRENT_TIMESTAMP(), last_error_message = NULL
+            WHERE pipeline_id = v_pipeline_id;
+
+        EXCEPTION
+            WHEN OTHER THEN
+                -- If an error occurs, capture the message and update status to FAILED
+                UPDATE INGESTION_CONTROL.PUBLIC.FILE_INGESTION_METADATA
+                SET load_status = 'FAILED', last_error_message = SQLERRM, load_sql = v_copy_sql
+                WHERE pipeline_id = v_pipeline_id;
+        END;
+    END FOR;
+
+    RETURN 'Metadata-driven load process completed. Check FILE_INGESTION_METADATA for details.';
+END;
+$$;
+
+--FILES OPTION TAKES PRECENDENCE OVER PATTERN
+---------------------------------------------
+COPY INTO my_table
+FROM @my_stage
+FILES = ('file1.csv', 'file2.csv', 'another_file.csv')
+FILE_FORMAT = (TYPE = CSV);
+
+
+
+--How to populate grid variable from a SQL anonymous block-
+------------------------------------------------------
+Sol - return table and populate grid using "Query result to grid"
+
+-- This anonymous block declares a result set, assigns a query to it,
+-- and then returns the result set as a table.
+DECLARE
+    -- Declare a RESULTSET variable.
+    -- This is a pointer to a query's result set.
+    res RESULTSET;
+BEGIN
+    -- Assign the result of a SELECT statement to the RESULTSET variable.
+    res := (SELECT 1 AS id, 'Apple' AS fruit UNION ALL
+            SELECT 2 AS id, 'Banana' AS fruit UNION ALL
+            SELECT 3 AS id, 'Orange' AS fruit);
+
+    -- Return the RESULTSET as a table.
+    -- The TABLE(...) function is required for this.
+    RETURN TABLE(res);
+END;
+
+
+Read from yaml and update sql queries
+-------------------------------------
+
+# Import necessary libraries
+from snowflake.snowpark import Session
+from snowflake.snowpark.functions import lit
+import yaml
+import os
+
+# --- 1. SET UP SNOWPARK SESSION (REPLACE WITH YOUR CONNECTION DETAILS) ---
+# This dictionary contains the connection details for a local Snowpark session.
+# For a production environment, you would use a connection file or other secure method.
+connection_parameters = {
+    "account": "<your_account_identifier>",
+    "user": "<your_username>",
+    "password": "<your_password>",
+    "role": "<your_role>",
+    "warehouse": "<your_warehouse>",
+    "database": "<your_database>",
+    "schema": "<your_schema>"
+}
+
+# Create the Snowpark session
+try:
+    session = Session.builder.configs(connection_parameters).create()
+    print("Snowpark session created successfully.")
+except Exception as e:
+    print(f"Error creating Snowpark session: {e}")
+    # Exit if session creation fails
+    exit()
+
+# Set up a target table for the queries.
+target_table_name = "SQL_QUERIES_TABLE"
+# Using a TEMPORARY TABLE here. It will automatically be dropped when the session ends.
+session.sql(f"""
+    CREATE OR REPLACE TEMPORARY TABLE {target_table_name} (
+        TFM_QUERY VARCHAR
+    );
+""").collect()
+print(f"Temporary target table '{target_table_name}' created or replaced.")
+
+
+# --- 2. EXAMPLE YAML FILE CONTENT WITH SQL QUERIES ---
+# This is the content that would be in your YAML file on the stage.
+yaml_content_string = """
+queries:
+  - query_name: "select_all_customers"
+    sql: "SELECT * FROM public.customers"
+
+  - query_name: "calculate_sales"
+    sql: |
+      SELECT
+        customer_id,
+        SUM(order_total) AS total_sales
+      FROM
+        public.orders
+      GROUP BY
+        customer_id
+      ORDER BY
+        total_sales DESC;
+
+  - query_name: "insert_new_product"
+    sql: "INSERT INTO public.products (product_id, product_name) VALUES (101, 'New Product')"
+
+  - query_name: "create_summary_table"
+    sql: |
+      CREATE OR REPLACE TABLE public.sales_summary AS
+      SELECT
+          DATE_TRUNC('month', order_date) AS sales_month,
+          SUM(order_total) AS monthly_revenue
+      FROM
+          public.orders
+      GROUP BY
+          sales_month
+      ORDER BY
+          sales_month;
+"""
+
+# --- 3. SET UP STAGE AND READ YAML FILE FROM IT ---
+stage_name = "yaml_stage"
+file_path = "queries.yml"
+
+# Create a temporary stage to hold the YAML file.
+session.sql(f"CREATE OR REPLACE TEMPORARY STAGE {stage_name};").collect()
+
+# Write the YAML content to the stage.
+# This simulates uploading a file to an external stage.
+session.file.put_stream(
+    data=yaml_content_string.encode('utf-8'),
+    stage_location=f"@{stage_name}/{file_path}",
+    auto_compress=False
+)
+print(f"YAML file '{file_path}' uploaded to temporary stage '{stage_name}'.")
+
+try:
+    # Read the content of the file from the stage into a DataFrame.
+    # We use file_format='CSV' to read the raw text content.
+    # We must explicitly read the file to get the content as a single row/column.
+    file_df = session.read.csv(
+        path=f"@{stage_name}/{file_path}",
+        header=False,
+        infer_schema=False,
+        skip_header=0
+    )
+    
+    # Concatenate the rows of the DataFrame into a single string.
+    # The YAML content is treated as a single record.
+    yaml_df = file_df.select(lit(session.sql(f"SELECT CONCAT_WS('\\n', * ) FROM (SELECT * FROM @{stage_name}/{file_path} (file_format => 'csv'))").collect()[0][0])).to_pandas().iloc[0, 0]
+
+    # Convert the YAML string into a Python dictionary.
+    yaml_data = yaml.safe_load(yaml_df)
+    print("YAML file content parsed successfully.")
+    
+    # Extract the list of queries from the dictionary
+    queries_list = yaml_data.get('queries', [])
+    
+    # Iterate through each query item in the list
+    for query_item in queries_list:
+        query_text = query_item['sql']
+        query_name = query_item['query_name']
+        
+        # Log the query being processed
+        print(f"Processing query '{query_name}':\n{query_text}\n")
+        
+        # Create a single-row Snowpark DataFrame with the query text.
+        query_df = session.create_dataframe([query_text], schema=["TFM_QUERY"])
+        
+        # Insert the DataFrame row into the target table.
+        query_df.write.mode("append").save_as_table(target_table_name)
+        print(f"Successfully inserted query '{query_name}' into {target_table_name}.\n")
+
+    print("All queries from the YAML file have been inserted into the table.")
+
+    # --- 4. VERIFY THE RESULT ---
+    # Read the final table to show the result.
+    final_table = session.table(target_table_name).sort("TFM_QUERY")
+    final_table.show()
+
+except Exception as e:
+    print(f"An error occurred during the process: {e}")
+
+# Close the session
+session.close()
+print("Snowpark session closed.")
+
+query transform-
+---------------
+Reorder CSV columns during a load
+Convert data types during a load
+Include sequence columns in loaded data, use seq.nextval in copy sql query if col1 number default seq1.nextval is defined
+Include AUTOINCREMENT / IDENTITY columns in loaded data if columns are specified in copy into mytable (col2, col3) and column definition - col1 number autoincrement start 1 increment 1
+
+
+Limitations - 
+https://docs.snowflake.com/en/user-guide/data-load-transform
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+/**********************************************************************************/
+
+Auditing Frmk-  
+-------------
+
+PIPELINE_DEFINITION-
+Column Name	Data Type	Description
+PIPELINE_ID	NUMBER(18,0)	Primary Key. Unique ID for each defined pipeline.
+PIPELINE_NAME	VARCHAR(255)	The name of the pipeline (e.g., Daily_Sales_Load, Customer_360_View).
+DESCRIPTION	VARCHAR(1000)	A brief description of the pipeline's purpose.
+CREATED_BY	VARCHAR(255)	The user or system that created the pipeline definition.
+CREATED_AT	TIMESTAMP_NTZ	Timestamp when the pipeline was defined.
+
+PIPELINE_EXECUTION-
+Column Name	Data Type	Description
+EXECUTION_ID	NUMBER(18,0)	Primary Key. Unique ID for each execution run.
+PIPELINE_ID	NUMBER(18,0)	Foreign Key to PIPELINE_DEFINITION.
+START_TIME	TIMESTAMP_NTZ	The timestamp when the pipeline execution began.
+END_TIME	TIMESTAMP_NTZ	The timestamp when the pipeline execution ended.
+EXECUTION_STATUS	VARCHAR(50)	The final status of the run (SUCCESS, FAILED, WARNING, RUNNING).
+EXECUTION_TIME_MS	NUMBER(18,0)	Total execution time in milliseconds (END_TIME - START_TIME).
+TRIGGERED_BY	VARCHAR(255)	The user, schedule, or event that triggered the execution.
+
+TASK_EXECUTION-
+This table breaks down a pipeline execution into its individual components, or "tasks."
+
+Column Name	Data Type	Description
+TASK_EXECUTION_ID	NUMBER(18,0)	Primary Key. Unique ID for each task execution.
+EXECUTION_ID	NUMBER(18,0)	Foreign Key to PIPELINE_EXECUTION.
+TASK_NAME	VARCHAR(255)	The name of the specific task (e.g., Load_Stage_Table, Transform_Data, Run_Quality_Checks).
+START_TIME	TIMESTAMP_NTZ	The timestamp when the task started.
+END_TIME	TIMESTAMP_NTZ	The timestamp when the task ended.
+TASK_STATUS	VARCHAR(50)	The status of the individual task (SUCCESS, FAILED).
+ERROR_MESSAGE	VARCHAR(1000)	Detailed error message if the task failed.
+
+DATA_AUDIT-
+This table links specific data events to the task that processed them, providing a crucial layer of lineage and data quality tracking.
+
+Column Name	Data Type	Description
+----------- ---------   -----------
+AUDIT_ID	NUMBER(18,0)	Primary Key. Unique ID for each data audit record.
+TASK_EXECUTION_ID	NUMBER(18,0)	Foreign Key to TASK_EXECUTION.
+SOURCE_TABLE	VARCHAR(255)	The source table or file of the data being processed.
+TARGET_TABLE	VARCHAR(255)	The target table where data was loaded.
+ROWS_PROCESSED	NUMBER(18,0)	The total number of rows processed by the task.
+ROWS_INSERTED	NUMBER(18,0)	The number of rows inserted into the target table.
+ROWS_REJECTED	NUMBER(18,0)	The number of rows rejected due to validation errors.
+LOAD_QUERY	VARCHAR(10000)	The full SQL query used for the data load or transformation.
+LOAD_TIMESTAMP	TIMESTAMP_NTZ	The timestamp of the data-related action.
+
+Use query_id to fetch row operation metadata and other fields
+-------------------------------------------------------------
+SELECT
+    query_text,
+    rows_inserted,
+    rows_updated,
+    rows_deleted
+FROM
+    SNOWFLAKE.ACCOUNT_USAGE.QUERY_HISTORY
+WHERE
+    execution_status = 'SUCCESS'
+    AND query_type IN ('INSERT', 'UPDATE', 'DELETE')
+    AND start_time > DATEADD('day', -30, CURRENT_TIMESTAMP())
+ORDER BY
+    start_time DESC;
+
