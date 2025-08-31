@@ -1,4 +1,5 @@
 Blob to ftp - Snowpark
+======================
 
 --1.Create egress/outbound network rule
 CREATE OR REPLACE NETWORK RULE my_ftp_network_rule
@@ -229,3 +230,315 @@ def run(session):
   return f"Retrieved credentials: Tenant ID={azure_tenant_id}, Client ID={client_id}"
 $$;
 
+--retrieve json string secrets from az key vault
+===============================================
+
+from azure.identity import DefaultAzureCredential
+from azure.keyvault.secrets import SecretClient
+import json
+
+# Authenticate and connect
+vault_url = "https://<your-key-vault-name>.vault.azure.net/"
+credential = DefaultAzureCredential()
+client = SecretClient(vault_url=vault_url, credential=credential)
+
+# Get secret (string)
+secret = client.get_secret("db-credentials").value
+
+# Convert JSON string back to dict
+credentials = json.loads(secret)
+
+print(credentials["username"])  # john_doe
+print(credentials["password"])  # secret123
+
+azure sql database to snowflake using snowpark python-
+=====================================================
+Limitation - Cannot be used in trial accounts
+
+CREATE OR REPLACE NETWORK RULE azure_sql_network_rule
+  TYPE = 'HOST_PORT'
+  VALUE_LIST = ('externalaccessdemo.database.windows.net:1433')
+  MODE = 'EGRESS';
+
+CREATE OR REPLACE SECRET azure_sql_secret
+  TYPE = GENERIC_PASSWORD
+  USERNAME = '<your_sql_username>'
+  PASSWORD = '<your_sql_password>';
+
+CREATE OR REPLACE EXTERNAL ACCESS INTEGRATION azure_sql_integration
+  ALLOWED_NETWORK_RULES = (azure_sql_network_rule)
+  ALLOWED_AUTHENTICATION_SECRETS = (azure_sql_secret)
+  ENABLED = TRUE;
+
+CREATE OR REPLACE PROCEDURE pull_azure_data()
+RETURNS TABLE()
+LANGUAGE PYTHON
+RUNTIME_VERSION = '3.8'
+PACKAGES = ('snowflake-snowpark-python', 'pandas', 'pyodbc')
+EXTERNAL_ACCESS_INTEGRATIONS = (azure_sql_integration)
+SECRETS = ('azure_sql_secret' = azure_sql_secret)
+HANDLER = 'run'
+AS
+import pandas as pd
+from sqlalchemy import create_engine
+from snowflake.connector.pandas_tools import write_pandas
+
+  """
+    Connects to Azure SQL Server using External Access Integration,
+    pulls data from a specified table, and returns a Snowpark DataFrame.
+    """
+    # 1. Retrieve connection details from Snowflake Secrets
+    # It's assumed a secret named 'azure_sql_secret' has been created in Snowflake
+    # with the keys: server, database, username, and password.
+    secret_name = "azure_sql_secret"
+    secret = session.get_secret(secret_name)
+    
+    server = secret.get_string("server")
+    database = secret.get_string("database")
+    username = secret.get_string("username")
+    password = secret.get_string("password")
+
+    # 2. Establish connection to Azure SQL Server
+    source_conn_str = (
+        f"DRIVER={{ODBC Driver 17 for SQL Server}};"
+        f"SERVER={server};"
+        f"DATABASE={database};"
+        f"UID={username};"
+        f"PWD={password};"
+        "Encrypt=yes;"
+        "TrustServerCertificate=no;"
+        "Connection Timeout=30;"
+    )
+
+    chunksize = 10000
+    source_query = f"SELECT * FROM {table_name};"
+    target_table_name = 'DBO.EMPLOYEE'
+
+
+def read_and_write_in_chunks(source_conn_str, source_query, chunksize, snowflake_session, target_table_name):
+    """
+    Reads data from a source database in chunks, loads it into Pandas DataFrames,
+    and then writes each chunk to Snowflake.
+
+    Args:
+        source_conn_str (str): The SQLAlchemy connection string for the source database.
+        source_query (str): The SQL query to execute on the source database.
+        chunksize (int): The number of rows to read in each chunk.
+        snowflake_session (snowflake.snowpark.Session): The active Snowpark session.
+        target_table_name (str): The name of the Snowflake table to write to.
+    """
+    try:
+        # Create a SQLAlchemy engine for the source database
+        engine = create_engine(source_conn_str)
+        
+        # Use pandas read_sql with chunksize to iterate over the data
+        with engine.connect() as connection:
+            for chunk_df in pd.read_sql(source_query, connection, chunksize=chunksize):
+                print(f"Read a chunk of {len(chunk_df)} rows from the source database.")
+                
+                # Write each pandas DataFrame chunk to Snowflake
+                success, n_chunks, n_rows, _ = write_pandas(
+                    conn=snowflake_session.connection,
+                    df=chunk_df,
+                    table_name=target_table_name,
+                    auto_create_table=False,
+                    overwrite=False,
+                    database=snowflake_session.get_current_database(),
+                    schema=snowflake_session.get_current_schema(),
+                )
+                
+                if success:
+                    print(f"Successfully wrote {n_rows} rows to Snowflake table '{target_table_name}'.")
+                else:
+                    print(f"Failed to write chunk to Snowflake.")
+                    break
+        
+    except Exception as e:
+        print(f"An error occurred: {e}")
+
+
+
+--update config replacing env variables #ev_*# in file
+======================================================
+import configparser
+import os
+import re
+
+# Custom exception for missing environment variables
+class MissingEnvironmentVariableError(Exception):
+    def __init__(self, missing_vars):
+        self.missing_vars = missing_vars
+        super().__init__(f"The following environment variables are not configured: {', '.join(missing_vars)}")
+
+def replace_tokens_from_config(file_content, config_file_path):
+    """
+    Replaces tokens in a string with values from environment variables specified in a config file.
+
+    Args:
+        file_content (str): The string content with tokens.
+        config_file_path (str): The path to the config.ini file.
+
+    Returns:
+        str: The modified content.
+    """
+    config = configparser.ConfigParser()
+    config.read(config_file_path)
+
+    # Dictionary to store the token-to-env-var mapping
+    token_map = {}
+    if 'variables' in config:
+        token_map = dict(config['variables'])
+    else:
+        raise ValueError("Config file must have a '[variables]' section.")
+
+    # Find all tokens in the file content
+    token_pattern = re.compile(r'#ev_(\w+)#')
+    tokens_found = set(token_pattern.findall(file_content))
+    
+    missing_vars = []
+    replacements = {}
+
+    # Check for and retrieve the corresponding environment variables
+    for token in tokens_found:
+        config_key = f'ev_{token}'
+        if config_key not in token_map:
+            raise ValueError(f"Token '{token}' found in file but not in config file.")
+
+        env_var_name = token_map[config_key]
+        env_value = os.getenv(env_var_name)
+        
+        if env_value is None:
+            missing_vars.append(env_var_name)
+        else:
+            replacements[f'#ev_{token}#'] = env_value
+
+    if missing_vars:
+        raise MissingEnvironmentVariableError(missing_vars)
+
+    # Perform the replacement using a regex substitution function
+    def replace_match(match):
+        token = match.group(0)
+        return replacements.get(token, token)
+        
+    final_content = token_pattern.sub(replace_match, file_content)
+
+    return final_content
+
+if __name__ == "__main__":
+    # Mock environment variables for demonstration
+    os.environ['LANDINGMINOR'] = 'landing_db_dev'
+    os.environ['STAGINGMINOR'] = 'staging_db_dev'
+    os.environ['DEV'] = 'dev_env'
+    os.environ['EDR_DEV'] = 'edr_db_dev'
+    
+    # Example file content
+    file_contents = """
+    select 
+    *
+    from #ev_landing_db#.landing_schema.claims
+    join #ev_staging_db#.staging_schema.stg_Claims
+    where 
+        '#ev_env_name#' = 'dev'
+
+    select 
+    *
+    from #ev_edr_db#.landing_schema.claims
+    join #ev_staging_db#.staging_schema.stg_Claims
+    where 
+        '#ev_env_name#' = 'dev'
+    """
+    
+    # Create a mock config.ini file for the script to read
+    with open('config.ini', 'w') as f:
+        f.write("[variables]\n")
+        f.write("ev_landing_db=LANDINGMINOR\n")
+        f.write("ev_staging_db=STAGINGMINOR\n")
+        f.write("ev_env_name=DEV\n")
+        f.write("ev_edr_db=EDR_DEV\n")
+
+    try:
+        # Example of a successful replacement
+        print("--- Successfully running with all variables configured ---")
+        modified_sql = replace_tokens_from_config(file_contents, 'config.ini')
+        print(modified_sql)
+
+        # Example of a failed run due to a missing environment variable
+        print("\n--- Running with a missing environment variable ---")
+        os.environ.pop('DEV', None) # Remove a variable to force an error
+        replace_tokens_from_config(file_contents, 'config.ini')
+
+    except (ValueError, MissingEnvironmentVariableError) as e:
+        print(f"Error: {e}")
+
+
+
+-- DPC DBT core run artifacts
+=============================
+
+-- file:///<dbt_run_folder_path>
+--azure://<container_name>/bcbsri-datahub/dbt_artifacts/target_123
+
+Set Environment Variables: In the dbt Core component, use the set_env_var property to define the location where dbt will output its target folder. This path will be used by the Python script.
+{
+  "set_env_var": {
+    "DBT_TARGET_DIR": "${MATILLION_AGENT_WORK_DIR}/dbt-run-${matillion_pipeline_id}/target"
+  }
+}
+
+# Import required libraries
+from azure.storage.blob import BlobServiceClient
+import os
+import snowflake.snowpark as snowpark
+
+# Define the script handler function
+def run(session):
+    """
+    Moves dbt artifacts from the local temporary directory to Azure Blob Storage.
+    
+    Args:
+        session (snowflake.snowpark.Session): The Snowpark session object.
+    
+    Returns:
+        str: A message indicating the outcome of the transfer.
+    """
+    # 1. Retrieve Azure credentials securely from a Snowflake Secret
+    azure_credentials_secret_name = 'your_azure_credentials_secret'
+    # The secret should be of type GENERIC_PASSWORD with keys 'account_name' and 'sas_token'
+    azure_credentials = session.get_secret(azure_credentials_secret_name)
+    azure_account_name = azure_credentials.get_string('account_name')
+    azure_sas_token = azure_credentials.get_string('sas_token')
+    
+    # 2. Define source and destination paths
+    dbt_target_dir = os.getenv('DBT_TARGET_DIR', '/tmp/dbt/target')
+    azure_container = 'dbt-artifacts-container'
+    
+    # Generate a unique path for the run in Azure Blob Storage
+    pipeline_run_id = os.getenv('MATILLION_JOB_ID')
+    destination_path = f'artifacts/{pipeline_run_id}'
+    
+    if not os.path.exists(dbt_target_dir):
+        return f"Warning: dbt target directory not found at {dbt_target_dir}. No artifacts to move."
+        
+    try:
+        # 3. Connect to Azure Blob Storage
+        connect_str = f"DefaultEndpointsProtocol=https;AccountName={azure_account_name};SharedAccessSignature={azure_sas_token}"
+        blob_service_client = BlobServiceClient.from_connection_string(connect_str)
+        container_client = blob_service_client.get_container_client(azure_container)
+        
+        # 4. Iterate through files and upload
+        upload_count = 0
+        for root, _, files in os.walk(dbt_target_dir):
+            for file_name in files:
+                local_file_path = os.path.join(root, file_name)
+                relative_path = os.path.relpath(local_file_path, dbt_target_dir)
+                blob_name = f"{destination_path}/{relative_path}"
+                
+                with open(local_file_path, "rb") as data:
+                    container_client.upload_blob(name=blob_name, data=data, overwrite=True)
+                    upload_count += 1
+                    
+        return f"Successfully uploaded {upload_count} artifacts to Azure Blob Storage."
+        
+    except Exception as e:
+        # 5. Handle any errors during the upload process
+        return f"Error during artifact upload: {str(e)}"     

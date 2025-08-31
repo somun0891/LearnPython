@@ -43,3 +43,49 @@ curl --location 'https://eu1.api.matillion.com/dpc/v1/projects?page=0&size=25' \
 
 
 
+PipelineExecution:
+-----------------
+
+{
+  "environmentName": "Dev",
+  "finishedAt": "2025-08-31T05:37:26.555Z",
+  "message": "Rewrite Table",
+  "pipelineExecutionId": "fd05a6c4-b3e1-4441-86a2-044d5092731d",
+  "pipelineName": "My Pipeline",
+  "pipelineType": "ORCHESTRATION",
+  "projectId": "4a8a6162-702b-4efc-b2ec-c986e0bc95e4",
+  "scheduleId": "9e2a6b04-ddd7-4bb4-b7dc-56e3b6f3ed43",
+  "startedAt": "2025-08-31T05:37:26.555Z",
+  "status": "RUNNING",
+  "trigger": "SCHEDULE",
+  "user": "A User"
+}
+
+PipelineExecutionStepResult:
+---------------------------
+    
+{
+  "page": 1,
+  "results": [
+    {
+      "childPipeline": {
+        "id": "b715b912-41fb-402c-ad3b-1807313670e3",
+        "name": "start"
+      },
+      "id": "b715b912-41fb-402c-ad3b-1807313670e8",
+      "name": "start",
+      "result": {                  #PipelineExecutionResult:
+        "finishedAt": "2025-08-31T05:39:10.001Z",
+        "message": "Rewrite Table",
+        "startedAt": "2025-08-31T05:39:10.001Z",
+        "status": "RUNNING"
+      }
+    }
+  ],
+  "size": 50,
+  "total": 472
+}
+
+
+
+

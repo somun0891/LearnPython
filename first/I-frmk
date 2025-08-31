@@ -234,7 +234,7 @@ DECLARE
     -- Variables to hold the values from the cursor
     v_pipeline_id NUMBER;
     v_source_stage_name VARCHAR;
-    v_stage_sql;
+    v_stage_sql VARCHAR;
     v_relative_path; 
     v_file_date_format_expr;    
     v_source_file_pattern VARCHAR;     
@@ -285,7 +285,7 @@ BEGIN
             -- Conditional logic for DELIMITED files
             IF (v_file_type = 'DELIMITED') THEN
                 
-        b         -- Build the file format clause from delimited_options JSON
+                -- Build the file format clause from delimited_options JSON
                 DECLARE
                     v_file_format_options_str VARCHAR DEFAULT '';
                 BEGIN
